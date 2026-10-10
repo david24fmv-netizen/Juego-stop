@@ -9,7 +9,6 @@
 <style>
 body{font-family:-apple-system,sans-serif;margin:0;padding:16px;background:#0f172a;color:#e2e8f0}
 h1{font-size:22px;margin:0 0 12px}
-h2{font-size:16px;color:#38bdf8;margin:16px 0 6px}
 input,textarea{width:100%;box-sizing:border-box;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:10px;font-size:16px;margin:4px 0 10px}
 input.pts{width:56px;flex:none;text-align:center;padding:6px;margin:0}
 button{background:#38bdf8;border:0;border-radius:8px;padding:10px 16px;font-size:16px;color:#0f172a;width:100%;margin:4px 0}
@@ -17,8 +16,7 @@ button.sec{background:#334155;color:#e2e8f0}
 button.stop{background:#f87171}
 button:disabled{opacity:.4}
 .card{background:#1e293b;border-radius:10px;padding:14px;margin:10px 0}
-.letra{font-size:54px;text-align:center;font-weight:bold;color:#38bdf8;margin:4px 0}
-.tiempo{font-size:22px;text-align:center;margin:4px 0 14px}
+.letra{font-size:54px;text-align:center;font-weight:bold;color:#38bdf8;margin:4px 0 14px}
 .cat{margin:10px 0}
 .cat label{font-size:13px;color:#94a3b8}
 .fila{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #334155}
@@ -27,6 +25,8 @@ button:disabled{opacity:.4}
 .col b{font-size:13px;color:#94a3b8;display:block}
 .resp{font-size:15px;word-break:break-word}
 .vacio{color:#64748b;font-style:italic}
+.ptsTxt{font-size:15px;font-weight:bold;color:#38bdf8;min-width:30px;text-align:right}
+.ptsTxt.pend{color:#64748b;font-weight:normal;font-size:12px}
 .codigo{font-size:28px;letter-spacing:4px;text-align:center;font-weight:bold;background:#1e293b;border-radius:8px;padding:10px;margin:10px 0}
 .avatares{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0;justify-content:center}
 .av{display:flex;flex-direction:column;align-items:center;gap:4px;width:64px}
@@ -59,7 +59,7 @@ const db = getFirestore(fb);
 
 const $=sel=>document.querySelector(sel);
 const app=$("#app");
-const LETRAS="ABCDEFGHIJLMNOPRSTUV".split("");
+const LETRAS="ABCDEFGHIJKLMNÑOPQRSTUVWXYZ".split("");
 const CAT_DEF="Nombre,Color,Animal,Fruta,Cosa,País";
 const COLORES=["#38bdf8","#4ade80","#fbbf24","#f87171","#a78bfa","#f472b6","#2dd4bf","#fb923c"];
 
@@ -69,12 +69,13 @@ let nombre=localStorage.getItem("stop_nombre")||"";
 let codigo=localStorage.getItem("stop_codigo")||"";
 let unsub=null;
 let salaActual=null;
-let timerInt=null;
 let letraElegida=null;
+let vistaKey=null; // evita redibujar mientras alguien escribe
 
 function colorDe(id){let h=0;for(const c of id)h=(h*31+c.charCodeAt(0))%COLORES.length;return COLORES[h];}
 
 function pantallaInicio(err){
+  vistaKey=null;
   app.innerHTML=`
     <h1>🔤 Stop / Basta</h1>
     <div class="card">
@@ -99,7 +100,7 @@ async function crearSala(){
   nombre=n;localStorage.setItem("stop_nombre",n);
   const code=Array.from({length:4},()=>"ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random()*32)]).join("");
   await setDoc(doc(db,"salas",code),{
-    estado:"esperando",ronda:0,categorias:CAT_DEF,letra:null,inicio:null,anfitrion:uid,
+    estado:"esperando",ronda:0,categorias:CAT_DEF,letra:null,anfitrion:uid,
     jugadores:{[uid]:{nombre:n,respuestas:{},total:0}}
   });
   entrarSala(code);
@@ -131,17 +132,24 @@ function entrarSala(code){
 function salir(){
   if(unsub)unsub();unsub=null;
   codigo="";localStorage.removeItem("stop_codigo");
-  if(timerInt)clearInterval(timerInt);
-  letraElegida=null;
+  letraElegida=null;vistaKey=null;
   pantallaInicio();
 }
 
+// Solo se redibuja TODA la pantalla cuando cambia de fase o de ronda.
+// Mientras sigas en la misma fase, solo se actualizan datos puntuales (sin tocar lo que estás escribiendo).
 function render(){
   if(!salaActual)return;
-  if(timerInt){clearInterval(timerInt);timerInt=null;}
-  if(salaActual.estado==="esperando")return pantallaLobby();
-  if(salaActual.estado==="jugando")return pantallaJuego();
-  if(salaActual.estado==="stop")return pantallaResultados();
+  const key=salaActual.estado+"-"+(salaActual.ronda||0);
+  if(key!==vistaKey){
+    vistaKey=key;
+    if(salaActual.estado==="esperando")return pantallaLobby();
+    if(salaActual.estado==="jugando")return pantallaJuego();
+    if(salaActual.estado==="stop")return pantallaResultados();
+  }else{
+    if(salaActual.estado==="esperando")return actualizarLobby();
+    if(salaActual.estado==="stop")return actualizarResultados();
+  }
 }
 
 function listaJugadores(){
@@ -157,11 +165,9 @@ function pantallaLobby(){
     <div class="card">
       <div style="text-align:center">Código de la sala</div>
       <div class="codigo">${codigo}</div>
-      <div class="avatares">
-        ${js.map(j=>`<div class="av"><div class="circ" style="background:${colorDe(j.id)}">${(j.nombre[0]||"?").toUpperCase()}</div><span>${j.nombre}${j.id===uid?" (tú)":""}${j.id===salaActual.anfitrion?" 👑":""}</span></div>`).join("")}
-      </div>
+      <div class="avatares" id="avatares"></div>
     </div>
-    ${salaActual.ronda>0?`<div class="tot">${js.map(j=>`${j.nombre}: <b>${j.total||0}</b> pts`).join(" · ")}</div>`:""}
+    <div class="tot" id="totales"></div>
     <div class="card">
       <label>Categorías (separadas por coma)</label>
       <input id="iCat" value="${salaActual.categorias}" ${soyAnfitrion?"":"disabled"}>
@@ -174,9 +180,10 @@ function pantallaLobby(){
         ${LETRAS.map(l=>`<button data-l="${l}">${l}</button>`).join("")}
       </div>
       <button id="bEmpezar" disabled>▶️ Empezar ronda</button>
-    </div>`:`<div class="espera">Esperando a que el anfitrión elija la letra y empiece la ronda...</div>`}
+    </div>`:`<div class="espera" id="espera">Esperando a que el anfitrión elija la letra y empiece la ronda...</div>`}
     <button class="sec" id="bSalir">Salir de la sala</button>
   `;
+  actualizarLobby();
   if(soyAnfitrion){
     $("#bGuardar").onclick=async()=>{
       await updateDoc(doc(db,"salas",codigo),{categorias:$("#iCat").value.trim()||CAT_DEF});
@@ -193,6 +200,13 @@ function pantallaLobby(){
   }
   $("#bSalir").onclick=salir;
 }
+function actualizarLobby(){
+  const js=listaJugadores();
+  const av=$("#avatares");
+  if(av)av.innerHTML=js.map(j=>`<div class="av"><div class="circ" style="background:${colorDe(j.id)}">${(j.nombre[0]||"?").toUpperCase()}</div><span>${j.nombre}${j.id===uid?" (tú)":""}${j.id===salaActual.anfitrion?" 👑":""}</span></div>`).join("");
+  const tot=$("#totales");
+  if(tot)tot.innerHTML=salaActual.ronda>0?js.map(j=>`${j.nombre}: <b>${j.total||0}</b> pts`).join(" · "):"";
+}
 
 async function empezarRonda(){
   if(!letraElegida)return;
@@ -206,8 +220,8 @@ async function empezarRonda(){
 
 let debounceT={};
 function guardarResp(cat,valor){
-  clearTimeout(debounceT[cat]);
-  debounceT[cat]=setTimeout(()=>{
+  clearTimeout(debounceT["r"+cat]);
+  debounceT["r"+cat]=setTimeout(()=>{
     updateDoc(doc(db,"salas",codigo),{["jugadores."+uid+".respuestas."+cat]:{texto:valor}});
   },350);
 }
@@ -220,7 +234,6 @@ function pantallaJuego(){
   const mias=(salaActual.jugadores[uid]&&salaActual.jugadores[uid].respuestas)||{};
   app.innerHTML=`
     <div class="letra">${salaActual.letra}</div>
-    <div class="tiempo" id="tTiempo">0 s</div>
     ${cats.map(c=>`
       <div class="cat">
         <label>${c}</label>
@@ -232,79 +245,86 @@ function pantallaJuego(){
     $(`input[data-cat="${c}"]`).oninput=e=>guardarResp(c,e.target.value);
   });
   $("#bStop").onclick=pararRonda;
-
-  const inicioMs=salaActual.inicio&&salaActual.inicio.toMillis?salaActual.inicio.toMillis():Date.now();
-  function tick(){
-    const el=$("#tTiempo");
-    if(!el)return;
-    el.textContent=Math.max(0,Math.floor((Date.now()-inicioMs)/1000))+" s";
-  }
-  tick();
-  timerInt=setInterval(tick,500);
 }
 
 function pantallaResultados(){
   const cats=salaActual.categorias.split(",").map(c=>c.trim()).filter(Boolean);
   const js=listaJugadores();
-
-  const filas=cats.map(cat=>{
-    const vals=js.map(j=>{
-      const r=(j.respuestas&&j.respuestas[cat])||{texto:""};
-      return{id:j.id,texto:(r.texto||"").trim(),puntos:r.puntos};
-    });
-    return{cat,vals};
-  });
-
   app.innerHTML=`
     <h1>Resultados — Ronda ${salaActual.ronda}</h1>
-    <div class="jugadores" style="text-align:center;color:#94a3b8">Letra: <b>${salaActual.letra}</b></div>
-    ${filas.map(f=>`
+    <div style="text-align:center;color:#94a3b8">Letra: <b>${salaActual.letra}</b></div>
+    ${cats.map(cat=>`
       <div class="card">
-        <div style="font-size:13px;color:#94a3b8;margin-bottom:4px">${f.cat}</div>
-        ${f.vals.map(v=>{
-          const j=js.find(x=>x.id===v.id);
-          const tiene=!!v.texto;
-          return `<div class="fila">
-            <div class="col"><b>${j.nombre}${v.id===uid?" (tú)":""}</b>
-              <span class="resp ${tiene?"":"vacio"}">${tiene?v.texto:"(sin palabra)"}</span>
+        <div style="font-size:13px;color:#94a3b8;margin-bottom:4px">${cat}</div>
+        ${js.map(j=>{
+          const r=(j.respuestas&&j.respuestas[cat])||{};
+          const tiene=!!(r.texto&&r.texto.trim());
+          const esMia=j.id===uid;
+          return `<div class="fila" data-cat="${cat}" data-jid="${j.id}">
+            <div class="col"><b>${j.nombre}${esMia?" (tú)":""}</b>
+              <span class="resp ${tiene?"":"vacio"}">${tiene?r.texto:"(sin palabra)"}</span>
             </div>
-            ${tiene?`<input class="pts" type="number" inputmode="numeric" min="0" max="20" value="${v.puntos!==undefined?v.puntos:""}" placeholder="pts" data-cat="${f.cat}" data-jid="${v.id}">`:""}
+            ${!tiene?"":esMia
+              ?`<input class="pts" type="number" inputmode="numeric" min="0" max="20" value="${r.puntos!==undefined&&r.puntos!==null?r.puntos:""}" placeholder="pts" data-cat="${cat}">`
+              :`<span class="ptsTxt ${r.puntos===undefined||r.puntos===null?'pend':''}" data-cat="${cat}" data-jid="${j.id}">${r.puntos===undefined||r.puntos===null?"esperando":r.puntos}</span>`
+            }
           </div>`;
         }).join("")}
       </div>
     `).join("")}
     <div class="tot" id="sumaPreview"></div>
-    <button id="bGuardarPts" class="sec">Sumar puntos y continuar</button>
+    <button id="bGuardarPts" class="sec">Sumar mis puntos</button>
     <button class="sec" id="bSalir">Salir de la sala</button>
-    <div class="nota">Pongan los puntos de cada palabra entre los dos. Las respuestas en blanco no tienen casilla y no suman. Al terminar, toquen "Sumar puntos" una sola vez por ronda.</div>
+    <div class="nota">Cada quien pone los puntos de su propia respuesta. Las respuestas en blanco no tienen casilla. Cuando ambos hayan puesto sus puntos, cualquiera puede empezar la siguiente ronda.</div>
+    ${salaActual.anfitrion===uid?'<button id="bNueva">▶️ Volver a la sala para la siguiente ronda</button>':''}
   `;
   document.querySelectorAll("input.pts").forEach(inp=>{
     inp.oninput=()=>{
-      clearTimeout(debounceT[inp.dataset.cat+inp.dataset.jid]);
-      debounceT[inp.dataset.cat+inp.dataset.jid]=setTimeout(()=>{
+      const cat=inp.dataset.cat;
+      clearTimeout(debounceT["p"+cat]);
+      debounceT["p"+cat]=setTimeout(()=>{
         const v=inp.value===""?null:Math.max(0,parseInt(inp.value)||0);
-        updateDoc(doc(db,"salas",codigo),{["jugadores."+inp.dataset.jid+".respuestas."+inp.dataset.cat+".puntos"]:v});
+        updateDoc(doc(db,"salas",codigo),{["jugadores."+uid+".respuestas."+cat+".puntos"]:v});
       },300);
     };
   });
-  $("#bGuardarPts").onclick=async()=>{
-    const upd={};
-    js.forEach(j=>{
-      let suma=0;
-      cats.forEach(c=>{
-        const r=(j.respuestas&&j.respuestas[c])||{};
-        if(r.texto&&r.puntos)suma+=r.puntos;
-      });
-      upd["jugadores."+j.id+".total"]=(j.total||0)+suma;
+  const bGuardar=$("#bGuardarPts");
+  if(bGuardar)bGuardar.onclick=async()=>{
+    let suma=0;
+    cats.forEach(c=>{
+      const r=(salaActual.jugadores[uid].respuestas&&salaActual.jugadores[uid].respuestas[c])||{};
+      if(r.texto&&r.puntos)suma+=r.puntos;
     });
-    await updateDoc(doc(db,"salas",codigo),upd);
-    $("#bGuardarPts").disabled=true;$("#bGuardarPts").textContent="Puntos sumados ✓";
-    setTimeout(()=>updateDoc(doc(db,"salas",codigo),{estado:"esperando"}),600);
+    await updateDoc(doc(db,"salas",codigo),{["jugadores."+uid+".total"]:(salaActual.jugadores[uid].total||0)+suma,["jugadores."+uid+".sumado"]:true});
+    bGuardar.disabled=true;bGuardar.textContent="Tus puntos ya están sumados ✓";
   };
-  $("#bSalir").onclick=salir;
+  const bNueva=$("#bNueva");
+  if(bNueva)bNueva.onclick=async()=>{
+    await updateDoc(doc(db,"salas",codigo),{estado:"esperando"});
+  };
+  actualizarResultados();
+}
+function actualizarResultados(){
+  const cats=salaActual.categorias.split(",").map(c=>c.trim()).filter(Boolean);
+  const js=listaJugadores();
+  document.querySelectorAll("span.ptsTxt").forEach(sp=>{
+    const j=js.find(x=>x.id===sp.dataset.jid);
+    const r=(j&&j.respuestas&&j.respuestas[sp.dataset.cat])||{};
+    const vacio=r.puntos===undefined||r.puntos===null;
+    sp.textContent=vacio?"esperando":r.puntos;
+    sp.className="ptsTxt"+(vacio?" pend":"");
+  });
+  const prev=$("#sumaPreview");
+  if(prev){
+    prev.innerHTML=js.map(j=>{
+      let s=0;cats.forEach(c=>{const r=(j.respuestas&&j.respuestas[c])||{};if(r.texto&&r.puntos)s+=r.puntos;});
+      return `${j.nombre}: <b>${s}</b> esta ronda (total si confirma: ${(j.total||0)+s})`;
+    }).join("<br>");
+  }
 }
 
 if(codigo)entrarSala(codigo);else pantallaInicio();
 </script>
 </body></html>
+
 

@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Stop">
+<title>Stop / Basta</title>
+<style>
+body{font-family:-apple-system,sans-serif;margin:0;padding:16px;background:#0f172a;color:#e2e8f0}
+h1{font-size:22px;margin:0 0 12px}
+h2{font-size:16px;color:#38bdf8;margin:16px 0 6px}
+input,textarea{width:100%;box-sizing:border-box;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:10px;font-size:16px;margin:4px 0 10px}
+button{background:#38bdf8;border:0;border-radius:8px;padding:10px 16px;font-size:16px;color:#0f172a;width:100%;margin:4px 0}
+button.sec{background:#334155;color:#e2e8f0}
+button.stop{background:#f87171}
+.card{background:#1e293b;border-radius:10px;padding:14px;margin:10px 0}
+.letra{font-size:54px;text-align:center;font-weight:bold;color:#38bdf8;margin:4px 0}
+.tiempo{font-size:22px;text-align:center;margin:4px 0 14px}
+.cat{margin:10px 0}
+.cat label{font-size:13px;color:#94a3b8}
+.fila{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #334155}
+.fila:last-child{border-bottom:none}
+.col{flex:1;min-width:0}
+.col b{font-size:13px;color:#94a3b8;display:block}
+.resp{font-size:15px;word-break:break-word}
+.ok{color:#4ade80}
+.no{color:#f87171;text-decoration:line-through}
+.pts{font-size:12px;color:#94a3b8}
+.codigo{font-size:28px;letter-spacing:4px;text-align:center;font-weight:bold;background:#1e293b;border-radius:8px;padding:10px;margin:10px 0}
+.jugadores{font-size:13px;color:#94a3b8;margin:6px 0}
+.tot{font-size:18px;text-align:center;margin:10px 0}
+.nota{font-size:12px;color:#94a3b8;margin-top:10px}
+.err{color:#fca5a5}
+</style></head><body>
+<div id="app">Cargando...</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDJUBnSljZVmiEGk7tt-JCnNKHU8FDIdKE",
+  authDomain: "juego-stop-99f57.firebaseapp.com",
+  projectId: "juego-stop-99f57",
+  storageBucket: "juego-stop-99f57.firebasestorage.app",
+  messagingSenderId: "248289979120",
+  appId: "1:248289979120:web:793effea55dcaf2a053035"
+};
+const fb = initializeApp(firebaseConfig);
+const db = getFirestore(fb);
+
+const $=sel=>document.querySelector(sel);
+const app=$("#app");
+const LETRAS="ABCDEFGHIJLMNOPRSTUV".split("");
+const CAT_DEF="Nombre,Color,Animal,Fruta,Cosa,País";
+
+let uid=localStorage.getItem("stop_uid");
+if(!uid){uid=crypto.randomUUID();localStorage.setItem("stop_uid",uid);}
+let nombre=localStorage.getItem("stop_nombre")||"";
+let codigo=localStorage.getItem("stop_codigo")||"";
+let unsub=null;
+let salaActual=null;
+let timerInt=null;
+
+function norm(s){return (s||"").trim().toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");}
+function esValida(texto,letra){const n=norm(texto);return n.length>=2 && n[0]===letra;}
+
+function pantallaInicio(err){
+  app.innerHTML=`
+    <h1>🔤 Stop / Basta</h1>
+    <div class="card">
+      <label>Tu nombre</label>
+      <input id="iNombre" value="${nombre}" placeholder="Ej: David">
+      <button id="bCrear">Crear sala nueva</button>
+    </div>
+    <div class="card">
+      <label>Código de una sala existente</label>
+      <input id="iCodigo" placeholder="Ej: AB3X" style="text-transform:uppercase">
+      <button class="sec" id="bUnir">Unirme a la sala</button>
+    </div>
+    ${err?`<div class="err">${err}</div>`:""}
+  `;
+  $("#bCrear").onclick=crearSala;
+  $("#bUnir").onclick=()=>unirse($("#iCodigo").value);
+}
+
+async function crearSala(){
+  const n=$("#iNombre").value.trim();
+  if(!n){alert("Escribe tu nombre.");return;}
+  nombre=n;localStorage.setItem("stop_nombre",n);
+  const code=Array.from({length:4},()=>"ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random()*32)]).join("");
+  await setDoc(doc(db,"salas",code),{
+    estado:"esperando",ronda:0,categorias:CAT_DEF,duracion:60,letra:null,inicio:null,
+    jugadores:{[uid]:{nombre:n,respuestas:{},total:0}}
+  });
+  entrarSala(code);
+}
+async function unirse(code){
+  code=(code||"").trim().toUpperCase();
+  if(!code){alert("Escribe el código de la sala.");return;}
+  const n=$("#iNombre").value.trim();
+  if(!n){alert("Escribe tu nombre.");return;}
+  nombre=n;localStorage.setItem("stop_nombre",n);
+  const ref=doc(db,"salas",code);
+  const snap=await getDoc(ref);
+  if(!snap.exists()){pantallaInicio("No existe una sala con ese código.");return;}
+  const d=snap.data();
+  if(!d.jugadores[uid]){
+    await updateDoc(ref,{["jugadores."+uid]:{nombre:n,respuestas:{},total:0}});
+  }
+  entrarSala(code);
+}
+function entrarSala(code){
+  codigo=code;localStorage.setItem("stop_codigo",code);
+  if(unsub)unsub();
+  unsub=onSnapshot(doc(db,"salas",code),snap=>{
+    if(!snap.exists()){salir();return;}
+    salaActual=snap.data();
+    render();
+  },()=>pantallaInicio("Se perdió la conexión con la sala."));
+}
+function salir(){
+  if(unsub)unsub();unsub=null;
+  codigo="";localStorage.removeItem("stop_codigo");
+  if(timerInt)clearInterval(timerInt);
+  pantallaInicio();
+}
+
+function render(){
+  if(!salaActual)return;
+  if(timerInt){clearInterval(timerInt);timerInt=null;}
+  if(salaActual.estado==="esperando")return pantallaLobby();
+  if(salaActual.estado==="jugando")return pantallaJuego();
+  if(salaActual.estado==="stop")return pantallaResultados();
+}
+
+function listaJugadores(){
+  return Object.entries(salaActual.jugadores||{}).map(([id,j])=>({id,...j}));
+}
+
+function pantallaLobby(){
+  const js=listaJugadores();
+  const soyCreador=js[0]&&js[0].id===uid;
+  app.innerHTML=`
+    <h1>🔤 Stop / Basta</h1>
+    <div class="card">
+      <div>Código de la sala</div>
+      <div class="codigo">${codigo}</div>
+      <div class="jugadores">Jugadores: ${js.map(j=>j.nombre).join(" · ")||"—"}</div>
+    </div>
+    <div class="card">
+      <label>Categorías (separadas por coma)</label>
+      <input id="iCat" value="${salaActual.categorias}" ${soyCreador?"":"disabled"}>
+      <label>Segundos por ronda</label>
+      <input id="iDur" type="number" value="${salaActual.duracion}" ${soyCreador?"":"disabled"}>
+      ${soyCreador?'<button id="bGuardar" class="sec">Guardar ajustes</button>':""}
+    </div>
+    <button id="bEmpezar">▶️ Empezar ronda</button>
+    <button class="sec" id="bSalir">Salir de la sala</button>
+    <div class="nota">Comparte el código con tu pareja para que se una. Cualquiera puede empezar la ronda.</div>
+  `;
+  if(soyCreador)$("#bGuardar").onclick=async()=>{
+    await updateDoc(doc(db,"salas",codigo),{categorias:$("#iCat").value.trim()||CAT_DEF,duracion:parseInt($("#iDur").value)||60});
+  };
+  $("#bEmpezar").onclick=empezarRonda;
+  $("#bSalir").onclick=salir;
+}
+
+async function empezarRonda(){
+  const letra=LETRAS[Math.floor(Math.random()*LETRAS.length)];
+  const js=listaJugadores();
+  const limpio={};
+  js.forEach(j=>limpio["jugadores."+j.id+".respuestas"]={});
+  await updateDoc(doc(db,"salas",codigo),{
+    estado:"jugando",letra,inicio:serverTimestamp(),ronda:(salaActual.ronda||0)+1,...limpio
+  });
+}
+
+let debounceT={};
+function guardarResp(cat,valor){
+  clearTimeout(debounceT[cat]);
+  debounceT[cat]=setTimeout(()=>{
+    updateDoc(doc(db,"salas",codigo),{["jugadores."+uid+".respuestas."+cat]:{texto:valor,invalida:false}});
+  },350);
+}
+async function pararRonda(){
+  await updateDoc(doc(db,"salas",codigo),{estado:"stop"});
+}
+
+function pantallaJuego(){
+  const cats=salaActual.categorias.split(",").map(c=>c.trim()).filter(Boolean);
+  const mias=(salaActual.jugadores[uid]&&salaActual.jugadores[uid].respuestas)||{};
+  app.innerHTML=`
+    <div class="letra">${salaActual.letra}</div>
+    <div class="tiempo" id="tTiempo">--</div>
+    ${cats.map(c=>`
+      <div class="cat">
+        <label>${c}</label>
+        <input data-cat="${c}" value="${(mias[c]&&mias[c].texto)||""}" placeholder="Palabra con ${salaActual.letra}...">
+      </div>`).join("")}
+    <button class="stop" id="bStop">🛑 ¡Stop!</button>
+  `;
+  cats.forEach(c=>{
+    $(`input[data-cat="${c}"]`).oninput=e=>guardarResp(c,e.target.value);
+  });
+  $("#bStop").onclick=pararRonda;
+
+  const inicioMs=salaActual.inicio&&salaActual.inicio.toMillis?salaActual.inicio.toMillis():Date.now();
+  const dur=salaActual.duracion||60;
+  function tick(){
+    const rest=Math.ceil(dur-(Date.now()-inicioMs)/1000);
+    const el=$("#tTiempo");
+    if(!el)return;
+    if(rest<=0){
+      el.textContent="¡Tiempo!";
+      if(salaActual.estado==="jugando")pararRonda();
+      clearInterval(timerInt);
+    }else el.textContent=rest+" s";
+  }
+  tick();
+  timerInt=setInterval(tick,500);
+}
+
+function pantallaResultados(){
+  const cats=salaActual.categorias.split(",").map(c=>c.trim()).filter(Boolean);
+  const js=listaJugadores();
+  const letra=salaActual.letra;
+  let puntosRonda={};js.forEach(j=>puntosRonda[j.id]=0);
+
+  const filas=cats.map(cat=>{
+    const vals=js.map(j=>{
+      const r=(j.respuestas&&j.respuestas[cat])||{texto:"",invalida:false};
+      const valida=esValida(r.texto,letra)&&!r.invalida;
+      return{id:j.id,texto:r.texto||"",valida};
+    });
+    const textosValidos=vals.filter(v=>v.valida).map(v=>norm(v.texto));
+    vals.forEach(v=>{
+      if(!v.valida)return;
+      const rep=textosValidos.filter(t=>t===norm(v.texto)).length>1;
+      const pts=rep?5:10;
+      puntosRonda[v.id]+=pts;
+      v.pts=pts;
+    });
+    return{cat,vals};
+  });
+
+  app.innerHTML=`
+    <h1>Resultados — Ronda ${salaActual.ronda}</h1>
+    <div class="jugadores">Letra: <b>${letra}</b></div>
+    ${filas.map(f=>`
+      <div class="card">
+        <div style="font-size:13px;color:#94a3b8;margin-bottom:4px">${f.cat}</div>
+        ${f.vals.map(v=>{
+          const j=js.find(x=>x.id===v.id);
+          const esMia=v.id===uid;
+          return `<div class="fila">
+            <div class="col"><b>${j.nombre}${esMia?" (tú)":""}</b>
+              <span class="resp ${v.texto?(v.valida?"ok":"no"):""}">${v.texto||"(vacío)"}</span>
+            </div>
+            <div style="text-align:right">
+              <span class="pts">${v.valida?"+"+v.pts:"0"}</span><br>
+              ${!esMia?`<button class="sec" style="width:auto;padding:4px 8px;font-size:12px" onclick="window.__inv('${f.cat}','${v.id}',${!v.valida&&!!v.texto})">${v.valida?"Impugnar":(v.texto?"Revalidar":"")}</button>`:""}
+            </div>
+          </div>`;
+        }).join("")}
+      </div>
+    `).join("")}
+    <div class="tot">
+      ${js.map(j=>`${j.nombre}: <b>${puntosRonda[j.id]}</b> pts esta ronda (total ${(j.total||0)+puntosRonda[j.id]})`).join("<br>")}
+    </div>
+    <button id="bGuardarPts" class="sec">Sumar puntos y continuar</button>
+    <button id="bNueva">▶️ Nueva ronda</button>
+    <button class="sec" id="bSalir">Salir de la sala</button>
+    <div class="nota">Toca "Impugnar" en la respuesta del otro si creen que no es válida (no es real o no empieza con la letra). Luego toca "Sumar puntos" una sola vez por ronda.</div>
+  `;
+  window.__inv=async(cat,jid,invalida)=>{
+    await updateDoc(doc(db,"salas",codigo),{["jugadores."+jid+".respuestas."+cat+".invalida"]:invalida});
+  };
+  $("#bGuardarPts").onclick=async()=>{
+    const upd={};
+    js.forEach(j=>{upd["jugadores."+j.id+".total"]=(j.total||0)+puntosRonda[j.id];});
+    await updateDoc(doc(db,"salas",codigo),upd);
+    $("#bGuardarPts").disabled=true;$("#bGuardarPts").textContent="Puntos sumados ✓";
+  };
+  $("#bNueva").onclick=empezarRonda;
+  $("#bSalir").onclick=salir;
+}
+
+if(codigo)entrarSala(codigo);else pantallaInicio();
+</script>
+</body></html>
